@@ -1,0 +1,150 @@
+1) docker build buildenv -t myos-buildenv
+2) Linux: docker run --rm -it -v "$(pwd)":/root/env myos-buildenv
+3) у середовищі докера: make build-x86_64
+4) exit 
+5) qemu-system-x86_64 -cdrom dist/x86_64/kernel.iso (емулювання ос у лінуксі)
+6) docker rmi myos-buildenv -f (очищення image у докері)
+
+
+Під час цієї серії уроків ми дослідимо як працює MMU (Memory Menagement Unit) у операційної системи x86_64.
+Необхідні матеріали для цього уроку:
+1) Середовище розробки (Я використовувала Visual Studio Code)
+2) Docker для спрощення процесу білдингу
+3) Qemu для емуляції системи 
+(як встановлювати описано тут - https://pdos.csail.mit.edu/6.828/2018/tools.html
+і як компілювати тут - https://pdos.csail.mit.edu/6.828/2018/labguide.html)
+
+Ми використовуємо Докер для створення ізольованого середовища розробки із усіма необхідними файлами. Він гарантує, що 
+всі необхідні інструменти будуть доступні незалежно від операційної системи, що полегшить процес розробки.
+
+Спершу нам потрібно створити паку buildenv із Dockerfile для створення Docker image.
+Цей файл описує, які кроки ми маємо зробити для того, щоб побудувати наше Docker image.
+
+1)FROM randomdude/gcc-cross-x86_64-elf
+
+2)RUN apt-get update 
+3)RUN apt-get upgrade -y
+4)RUN apt-get install -y nasm
+5)RUN apt-get install -y xorriso
+6)RUN apt-get install -y grub-pc-bin
+7)RUN apt-get install -y grub-common
+
+8)VOLUME /root/env
+9)WORKDIR /root/env
+
+По рядочках:
+1) використовується базовий образ Docker, що містить інструменти для компіляції ELF-файлів для x86_64
+2) Оновлює інформацію про пакунки в системі
+3) Оновлює всі пакунки до найновіших версій
+4) Встановлює NASM - асемблер для x86
+5) Встановлює xorriso - для створення ISO-образів
+6) Встановлює завантажувач GRUB
+7) Встановлює потрібні файли для GRUB
+8) Встановлює точку де будуть знаходитись усі наші файли у Докері: /root/env
+9) Встановлює робочий каталог на /root/env
+
+Далі ми створюємо header.asm, який правильно (принаймні ми на це надіємось) завантажить ядро операційної системи.
+Хедер визначає, що ми будемо завантажувати ядро за стандартом multiboot 2 compliant, що означає, що завантажувач (bootloader)
+передасть контроль ядру ОС під час завантаження. 
+
+
+section .multiboot_header
+header_start:
+	; magic number
+	dd 0xe85250d6 ; multiboot2
+	; architecture
+	dd 0 ; protected mode i386
+	; header length
+	dd header_end - header_start
+	; checksum
+	dd 0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+
+	; end tag
+	dw 0
+	dw 0
+	dd 8
+header_end:
+
+Спершу ми оголошуємо секцію .multiboot_header, в якій буде розміщений заголово Multiboot
+Починаємо заголовок - header_start
+Встановлюємо магічне число, яке покажзує, що це саме режим multiboot 2 - dd 0xe85250d6
+Вказуємо архітектуру - dd 0 - 32-бітна для i386
+Довжина заголовку - dd header_end - header_start
+Визначення чексуми, для визначення, чи не був заголовок пошкоджений чи змінений перед завантаженням ядра.
+0x100000000 - (0xe85250d6 + 0 + (header_end - header_start))
+2^32 - (магічне число режиму multiboot 2 + 32-бітна архітектура для i386 + (кінець заголовку - початок заголовку))
+Кінець заголовку - 0
+Кінець заголовку - 0
+Версія стандарту заголовку - 8
+
+Вся подальша логіка відбувається у main.asm - вхідній точці у нашу систему:
+
+global start
+
+section .text
+bits 32
+start:
+    ; print 'OK'
+    mov dword [0xb8000], 0x2f4b2f4f
+    hlt
+
+Цей код ми використовуємо для того, щоб запрінтити OK у лівому верхньому кутку екрану нашого емулятора. Свою функцію виводу ми напишемо 
+на наступному уроці, тому зараз нам потрібно напряму записати у комірку пам'яті те, що ми хочемо вивести.
+
+
+в секції текст знаходиться весь код нашої програми, тож встановивши 32-бітовий режим (bits 32), ми записуємо у 0xb8000 наше OK (0x2f4b2f4f).
+0xb8000 - базова адреса для текстової багатопоточності у режимі реального часу (для виводу того шо ми хочемо на екран)
+hlt - зупинка процесора (в нашому випадку - припинення виконання програми)
+
+Далі нам потрібно все з'єднати (link)
+
+linker.ld:
+
+ENTRY(start)
+
+SECTIONS
+{
+	. = 1M;
+
+	.boot :
+	{
+		KEEP(*(.multiboot_header))
+	}
+
+	.text :
+	{
+		*(.text)
+	}
+}
+
+Вхід у програму у точці start, потім описуюються секції, які нам потрібні в пам'яті та як їх розміщувати.
+Ми сворюємо секцію ядра (1М), тоді секція для multiboot  і для коду (.text).
+
+Файл конфігурації:
+
+set timeout=0 - негайне завантаження
+set default=0
+
+menuentry "my os" { - пункт меню "my os"
+	multiboot2 /boot/kernel.bin - завантаження ядра за допомогою multiboot2
+	boot - ініціалізація процесу завантаження
+}
+
+
+Makefile:
+
+x86_64_asm_source_files := $(shell find src/impl/x86_64 -name *.asm)  - файли з асемблерним кодом
+x86_64_asm_object_files := $(patsubst src/impl/x86_64/%.asm, build/x86_64/%.o, $(x86_64_asm_source_files)) - результуючі файли, об'єктники
+
+$(x86_64_asm_object_files): build/x86_64/%.o : src/impl/x86_64/%.asm - перекомпільовуємо ресурсні файли лише коли вони змінилися
+	mkdir -p $(dir $@) && \ - створюємо директорію для скомпільованих файлів
+	nasm -f elf64 $(patsubst build/x86_64/%.o, src/impl/x86_64/%.asm, $@) -o $@ - команда компіляції файлів
+
+.PHONY: build-x86_64
+build-x86_64: $(x86_64_asm_object_files) - використовує об'єктники отримані з асемблерного коду
+	mkdir -p dist/x86_64 && \ - створює папку для виводу
+	x86_64-elf-ld -n -o dist/x86_64/kernel.bin -T targets/x86_64/linker.ld $(x86_64_asm_object_files) && \ - лінкує об'єктники 
+	cp dist/x86_64/kernel.bin targets/x86_64/iso/boot/kernel.bin && \ - копіюємо kernel.bin в папку targets/x86_64/iso/boot/
+	grub-mkrescue /usr/lib/grub/i386-pc -o dist/x86_64/kernel.iso targets/x86_64/iso - створює iso файл за допомогою GRUB для завантаження системи
+
+
