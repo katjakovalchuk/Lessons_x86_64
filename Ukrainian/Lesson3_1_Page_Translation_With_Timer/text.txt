@@ -1,0 +1,12 @@
+// #include "print.h"
+// #include "graphic.h"
+
+// void kernel_main() {
+//     set_paging_mode(PAGING_DISABLED);
+//     draw_colored_bars();
+
+//     // set_paging_mode(PAGING_ENABLED);
+//     // draw_colored_bars();
+
+//     while (1) {}
+// }

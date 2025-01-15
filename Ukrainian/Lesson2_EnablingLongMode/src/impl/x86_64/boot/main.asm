@@ -44,6 +44,7 @@ chech_cpuid:
     je .no_cpuid
     ret
 
+ 
 .no_cpuid:
     mov al, "C"
     jmp error
